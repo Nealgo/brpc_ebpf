@@ -47,6 +47,13 @@
 #include "brpc/details/controller_private_accessor.h"
 #include "brpc/details/server_private_accessor.h"
 
+#if __has_include(<sys/sdt.h>)
+#include <sys/sdt.h>
+#else
+// Fallback: no-op when systemtap-sdt-dev is not installed.
+#define DTRACE_PROBE1(provider, name, arg1) do {} while(0)
+#endif
+
 extern "C" {
 void bthread_assign_data(void* data);
 }
@@ -231,8 +238,11 @@ static bool SerializeResponse(const google::protobuf::Message& res,
     ContentType content_type = cntl.response_content_type();
     CompressType compress_type = cntl.response_compress_type();
     ChecksumType checksum_type = cntl.response_checksum_type();
-    if (!SerializeRpcMessage(res, cntl, content_type, compress_type,
-                             checksum_type, &buf)) {
+    DTRACE_PROBE1(brpc, serialize_response_start, cntl.log_id());
+    const bool ok = SerializeRpcMessage(res, cntl, content_type, compress_type,
+                                         checksum_type, &buf);
+    DTRACE_PROBE1(brpc, serialize_response_end, cntl.log_id());
+    if (!ok) {
         cntl.SetFailed(ERESPONSE,
                        "Fail to serialize response=%s, "
                        "ContentType=%s, CompressType=%s, ChecksumType=%s",
@@ -808,9 +818,12 @@ void ProcessRpcRequest(InputMessageBase* msg_base) {
                 static_cast<ChecksumType>(meta.checksum_type());
             messages =
                 server->options().rpc_pb_message_factory->Get(*svc, *method);
-            if (!DeserializeRpcMessage(req_buf, *cntl, content_type,
-                                       compress_type, checksum_type,
-                                       messages->Request())) {
+            DTRACE_PROBE1(brpc, deserialize_request_start, cntl->log_id());
+            const bool ok = DeserializeRpcMessage(req_buf, *cntl, content_type,
+                                                    compress_type, checksum_type,
+                                                    messages->Request());
+            DTRACE_PROBE1(brpc, deserialize_request_end, cntl->log_id());
+            if (!ok) {
                 cntl->SetFailed(
                     EREQUEST,
                     "Fail to parse request=%s, ContentType=%s, "
@@ -992,17 +1005,22 @@ void ProcessRpcResponse(InputMessageBase* msg_base) {
             if (cntl->response()->GetDescriptor() == SerializedResponse::descriptor()) {
                 ((SerializedResponse*)cntl->response())->
                     serialized_data().append(*res_buf_ptr);
-            } else if (!DeserializeRpcMessage(*res_buf_ptr, *cntl, content_type,
-                                              compress_type, checksum_type,
-                                              cntl->response())) {
-                cntl->SetFailed(
-                    EREQUEST,
-                    "Fail to parse response=%s, ContentType=%s, "
-                    "CompressType=%s, ChecksumType=%s, request_size=%d",
-                    butil::EnsureString(cntl->response()->GetDescriptor()->full_name()).c_str(),
-                    ContentTypeToCStr(content_type),
-                    CompressTypeToCStr(compress_type),
-                    ChecksumTypeToCStr(checksum_type), res_size);
+            } else {
+                DTRACE_PROBE1(brpc, deserialize_response_start, cntl->log_id());
+                const bool ok = DeserializeRpcMessage(*res_buf_ptr, *cntl, content_type,
+                                                       compress_type, checksum_type,
+                                                       cntl->response());
+                DTRACE_PROBE1(brpc, deserialize_response_end, cntl->log_id());
+                if (!ok) {
+                    cntl->SetFailed(
+                        EREQUEST,
+                        "Fail to parse response=%s, ContentType=%s, "
+                        "CompressType=%s, ChecksumType=%s, request_size=%d",
+                        butil::EnsureString(cntl->response()->GetDescriptor()->full_name()).c_str(),
+                        ContentTypeToCStr(content_type),
+                        CompressTypeToCStr(compress_type),
+                        ChecksumTypeToCStr(checksum_type), res_size);
+                }
             }
         } // else silently ignore the response.
     } while (0);
@@ -1030,8 +1048,11 @@ void SerializeRpcRequest(butil::IOBuf* request_buf, Controller* cntl,
     ContentType content_type = cntl->request_content_type();
     CompressType compress_type = cntl->request_compress_type();
     ChecksumType checksum_type = cntl->request_checksum_type();
-    if (!SerializeRpcMessage(*request, *cntl, content_type, compress_type,
-                             checksum_type, request_buf)) {
+    DTRACE_PROBE1(brpc, serialize_request_start, cntl->log_id());
+    const bool ok = SerializeRpcMessage(*request, *cntl, content_type, compress_type,
+                                         checksum_type, request_buf);
+    DTRACE_PROBE1(brpc, serialize_request_end, cntl->log_id());
+    if (!ok) {
         return cntl->SetFailed(
             EREQUEST,
             "Fail to compress request=%s, "
